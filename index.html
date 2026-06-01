@@ -184,7 +184,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div class="task-list" id="main-list"></div>
   <div class="two-col">
     <div class="card"><div class="card-title">채널별 진행현황</div><div id="channel-stats"></div></div>
-    <div class="card"><div class="card-title">프로젝트별 현황</div><div id="project-summary"></div></div>
+    <div class="card"><div class="card-title">이번 달 주요 과제 <span id="goals-month" style="font-weight:400;color:#bbb;font-size:10px;margin-left:4px"></span></div><div id="goals-list"></div></div>
   </div>
 </div>
 
@@ -285,7 +285,7 @@ const CHANNEL_TAG={'자사몰':'tag-mall','쿠팡':'tag-coupang','올리브영':
 const CHANNEL_COLOR={'자사몰':'#7f77dd','쿠팡':'#378add','올리브영':'#d4537e','스마트스토어':'#1d9e75','기타':'#888780','전사':'#3b5bdb'};
 const PROJECT_COLORS={'자사몰 리뉴얼':'#7f77dd','쿠팡 광고 운영':'#378add','올리브영 광고':'#d4537e','CRM 운영':'#e8a020','신제품 런칭':'#e24b4a','기타':'#888780'};
 
-let tasks=[],promos=[],dataSha='';
+let tasks=[],promos=[],goals=[],dataSha='';
 let currentFilter='all',currentSort='due',currentCalTab='todo',activeModalTab='task';
 let calYear=new Date().getFullYear(),calMonth=new Date().getMonth();
 const todayDate=new Date();
@@ -313,6 +313,7 @@ async function loadData(){
     const json=await res.json();
     tasks=Array.isArray(json.tasks)?json.tasks:[];
     promos=Array.isArray(json.promos)?json.promos:[];
+    goals=Array.isArray(json.goals)?json.goals:[];
     // SHA 저장 (업데이트용)
     try{
       const meta=await fetch(API_BASE+'data.json',{headers:{'Authorization':'token '+GITHUB_TOKEN}});
@@ -328,7 +329,7 @@ async function loadData(){
 
 // ── GitHub data.json 저장 ────────────────────────────────────────
 async function saveData(){
-  const content=JSON.stringify({tasks,promos},null,2);
+  const content=JSON.stringify({tasks,promos,goals},null,2);
   const encoded=btoa(unescape(encodeURIComponent(content)));
   const body={message:'대시보드 업데이트 '+new Date().toLocaleString('ko'),content:encoded,branch:'main'};
   if(dataSha)body.sha=dataSha;
@@ -340,15 +341,28 @@ async function saveData(){
 
 // ── Dashboard ────────────────────────────────────────────────────
 function renderDashboard(){
-  const done=tasks.filter(t=>t.done).length;
+  const thisMonStr2=ymd(thisMon), thisSunStr2=ymd(thisSun);
+  const weekTasks=tasks.filter(t=>!t.due||(t.due>=thisMonStr2&&t.due<=thisSunStr2));
+  const done=weekTasks.filter(t=>t.done).length;
   const dueC=tasks.filter(t=>!t.done&&(isToday(t.due)||isTmr(t.due))).length;
   const urgC=tasks.filter(t=>t.urgent&&!t.done).length;
-  document.getElementById('m-total').textContent=tasks.length;
+  document.getElementById('m-total').textContent=weekTasks.length;
   document.getElementById('m-done').textContent=done;
-  document.getElementById('m-pct').textContent=tasks.length?Math.round(done/tasks.length*100)+'% 달성':'0%';
+  document.getElementById('m-pct').textContent=weekTasks.length?Math.round(done/weekTasks.length*100)+'% 달성':'0%';
   document.getElementById('m-due').textContent=dueC;
   document.getElementById('m-urgent').textContent=urgC;
-  let f=[...tasks];
+  // 이번 주 범위: thisMon ~ thisSun + 미완료 + 오늘 이전 마감된 미완료(연체)
+  const thisMonStr=ymd(thisMon), thisSunStr=ymd(thisSun);
+  let weekBase=tasks.filter(t=>{
+    if(t.done) return false; // 완료된 건 기본 제외
+    if(!t.due) return true;  // 마감일 없으면 포함
+    // 이번 주 마감이거나, 마감 지났는데 아직 미완료(연체)
+    return t.due<=thisSunStr;
+  });
+  // 메트릭은 이번 주 기준 전체 (done 포함)
+  const weekAll=tasks.filter(t=>!t.due||(t.due>=thisMonStr&&t.due<=thisSunStr));
+
+  let f=[...weekBase];
   if(currentFilter==='todo')f=f.filter(t=>!t.done);
   else if(currentFilter==='urgent')f=f.filter(t=>t.urgent||isToday(t.due)||isTmr(t.due));
   else if(currentFilter!=='all')f=f.filter(t=>t.channel===currentFilter);
@@ -362,6 +376,34 @@ function renderDashboard(){
     const tot=tasks.filter(t=>t.channel===ch).length,dn=tasks.filter(t=>t.channel===ch&&t.done).length,pct=tot?Math.round(dn/tot*100):0,col=CHANNEL_COLOR[ch]||'#888';
     return'<div class="channel-row"><div class="ch-left"><span class="ch-name">'+ch+'</span><div class="ch-bar-wrap"><div class="ch-bar"><div class="ch-bar-fill" style="width:'+pct+'%;background:'+col+'"></div></div></div></div><span class="ch-count">'+dn+'/'+tot+'</span></div>';
   }).join('');
+  // 이번 달 주요 과제
+  const thisMonth = ymd(todayDate).slice(0,7);
+  const monthGoals = goals.filter(g => g.month === thisMonth || !g.month);
+  const goalsEl = document.getElementById('goals-list');
+  const goalsMonthEl = document.getElementById('goals-month');
+  if(goalsMonthEl) goalsMonthEl.textContent = todayDate.getFullYear()+'년 '+(todayDate.getMonth()+1)+'월';
+  if(goalsEl){
+    if(monthGoals.length===0){
+      goalsEl.innerHTML='<div style="font-size:12px;color:#ccc;padding:8px 0;font-style:italic">Goals 탭에 이번 달 과제를 입력해주세요</div>';
+    } else {
+      goalsEl.innerHTML = monthGoals.sort((a,b)=>Number(a.priority)-Number(b.priority)).map(g=>{
+        const statusColor = g.status==='완료'?'#22c55e':g.status==='진행중'?'#3b5bdb':'#aaa';
+        const statusBg = g.status==='완료'?'#f0fdf4':g.status==='진행중'?'#eff4ff':'#f5f5f3';
+        const pNum = Number(g.priority)||0;
+        return '<div class="channel-row" style="align-items:flex-start;padding:8px 0">'+
+          '<div style="flex:1;min-width:0">'+
+            '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'+
+              '<span style="font-size:11px;font-weight:600;color:#fff;background:'+statusColor+';border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0">'+pNum+'</span>'+
+              '<span style="font-size:13px;color:#1a1a1a;font-weight:500">'+g.title+'</span>'+
+            '</div>'+
+            (g.goal?'<div style="font-size:11px;color:#888;margin-left:24px">🎯 '+g.goal+'</div>':'')+
+          '</div>'+
+          '<span style="font-size:11px;padding:2px 8px;border-radius:20px;background:'+statusBg+';color:'+statusColor+';white-space:nowrap;flex-shrink:0;margin-left:8px">'+g.status+'</span>'+
+        '</div>';
+      }).join('');
+    }
+  }
+
   document.getElementById('project-summary').innerHTML=['자사몰 리뉴얼','쿠팡 광고 운영','올리브영 광고','CRM 운영','신제품 런칭'].map(p=>{
     const tot=tasks.filter(t=>t.project===p).length,dn=tasks.filter(t=>t.project===p&&t.done).length,col=PROJECT_COLORS[p]||'#888';
     return'<div class="channel-row"><span class="ch-name" style="font-size:13px">'+p+'</span><span class="tag" style="background:'+col+'22;color:'+col+';font-size:11px">'+dn+'/'+tot+'</span></div>';
